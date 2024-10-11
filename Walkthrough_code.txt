@@ -1,0 +1,156 @@
+############################
+###STAGED_NEW WALKTHROUGH###
+############################
+
+#Before use: Copy newest version of Staged_New to "C:/Users/" folder on pc!
+#Remember to filter out or delete Nordland and Troms_og_Finnmark from County
+
+library(rcarbon)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(readxl)
+library(rworldmap)
+library(sp)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthhires)
+library(devtools)
+
+#Import
+STAGED_NEW <- read_excel("C:/Users/STAGED_NEW.xlsx")
+
+#Subset of date older than 2999BP
+staged <- subset(STAGED_NEW, BP>2999)
+
+#CALIBRATION, BINNING, SPD
+#Calibrate
+cal=calibrate(x=staged$BP, errors=staged$SD, normalized=FALSE, calCurves='intcal20')
+#Binning
+bins <- binPrep(staged$Site_ID, staged$BP, h=200)
+#Create SPD
+spd <-spd(x=cal, bins=bins, spdnormalised=FALSE, timeRange=c(11800,2500))
+plot(spd, calendar = "BCAD")
+plot(spd, calendar="BCAD", runm=200, add = TRUE, type = "simple", col = "darkgoldenrod", lwd=3, lty=2)
+plot(spd, calendar="BCAD", runm=500, add = TRUE, type = "simple", col = "blue", lwd=2.5, lty=2)
+legend("topleft", legend = c("STAGED dataset SPD", "(200 y running mean)", "(500 y running mean)"), col=c("grey", "darkgoldenrod", "blue"), lwd=2)
+
+#SPD SUBSET
+#Stone age vs. farming sites
+staged.stoneage <- subset(staged, Site_type == "Stone_Age")
+staged.farming <- subset(staged, Site_type == "Settlement")
+staged.cereal <- subset(staged, Material == "Charred_cereal_grain")
+cal.stoneage=calibrate(x=staged.stoneage$BP, errors=staged.stoneage$SD, normalized=FALSE, calCurves='intcal20')
+cal.farming=calibrate(x=staged.farming$BP, errors=staged.farming$SD, normalized=FALSE, calCurves='intcal20')
+cal.cereal=calibrate(x=staged.cereal$BP, errors=staged.cereal$SD, normalized=FALSE, calCurves='intcal20')
+spd.stoneage=spd(x=cal.stoneage, spdnormalised=FALSE, timeRange=c(11800,2500), runm=200)
+spd.farming=spd(x=cal.farming, spdnormalised=FALSE, timeRange=c(11800,2500), runm=200)
+spd.cereal=spd(x=cal.cereal, spdnormalised=FALSE, timeRange=c(11800,2500), runm=200)
+plot(spd.stoneage, calendar = 'BCAD', ylim = c(0,0.7))
+plot(spd.farming, calendar="BCAD", add = TRUE, type = "simple", col = "darkgoldenrod", lwd=3, lty=2)
+plot(spd.cereal, calendar="BCAD", add = TRUE, type = "simple", col = "blue", lwd=2.5, lty=2)
+legend("topleft", legend = c("Forager sites (grid system)", "Farming sites (excavator)", "Charred cereal grain (n=135)"), col=c("grey","darkgoldenrod", "blue"), lwd=2)
+
+#STACKING
+#Counties
+Stack.county <- stackspd(x=cal,group=staged$County,timeRange=c(11800,2500),bins=bins, runm=100, verbos=FALSE)
+plot(Stack.county, calendar='BCAD', type='lines')
+plot(Stack.county, calendar='BCAD', type='multipanel', xlim=c(-14000,-500))
+#Site type
+Stack.type <- stackspd(x=cal,group=staged$Site_type,timeRange=c(11800,2500),bins=bins, runm=100, verbos=FALSE)
+plot(Stack.type, calendar='BCAD', type='lines')
+plot(Stack.type, calendar='BCAD', type='multipanel', xlim=c(-14000,-500))
+#Region
+Stack.region <- stackspd(x=cal,group=staged$Region,timeRange=c(11800,2500),bins=bins, runm=50, verbos=FALSE)
+plot(Stack.region, calendar='BCAD', type='lines')
+plot(Stack.region, calendar='BCAD', type='multipanel', xlim=c(-14000,-500))
+
+#CKDE
+ckde.samples.staged <- sampleDates(cal, bins=bins, nsim=500, boot=FALSE)
+ckde.staged <- ckde(ckde.samples.staged, timeRange=c(11800,2500), bw=5, normalised=TRUE)
+plot(ckde.staged, type='multiline', calendar='BCAD')
+plot(ckde.staged, type='envelope', interval=0.95, calendar='BCAD')
+
+#MCSPD
+#Modeltest exponential
+MCSPD <- modelTest(cal, errors=staged$SD, bins=bins, nsim=500, runm=100, timeRange=c(11800,2500), method=c("calsample"), model="exponential", raw=TRUE)
+#Plot the MCSPD
+plot(MCSPD, calendar="BCAD", xlim = c(-9800,-500), ylim = c(0, 0.5))
+#Generate summary statistics for MCSPD
+summary(MCSPD)
+#Use MCSD to test for local growth rates
+summary(MCSPD, type='roc')
+plot(MCSPD, type='roc', calendar="BCAD")
+
+#ModelTest custom model
+# Start values should be adjusted depending on the observed SPD
+logFit <- nls(PrDens~SSlogis(calBP, Asym, xmid, scale),data=spd$grid,control=nls.control(maxiter=200),start=list(Asym=0.2,xmid=8000,scale=-100))
+# Generate a data frame containing the fitted values
+logFitDens=data.frame(calBP=spd$grid$calBP, PrDens=SSlogis(input=spd$grid$calBP, Asym=coefficients(logFit)[1], xmid=coefficients(logFit)[2], scal=coefficients(logFit)[3]))
+# Use the modelTest function (returning the raw simulation output - see below)
+LogNull <- modelTest(cal, errors=staged$SD, bins=bins, nsim=500, runm=100, timeRange=c(11800,2500), method = c("calsample"), model="custom", predgrid=logFitDens, raw=TRUE)
+#Plot the mcspd
+plot(LogNull, calendar="BCAD", xlim = c(-9800,-500), ylim = c(0, 0.5))
+legend("topleft", legend = c("MCSPD test (logistic fit)"), col=c("grey"), lwd=2)
+#Generate summary statistics for MCSPD
+summary(LogNull)
+
+#ModelTest custom model stone age sites
+#Needs bins for this subset
+bins.stoneage <- binPrep(staged.stoneage$Site_ID, staged.stoneage$BP, h=200)
+# Start values should be adjusted depending on the observed SPD
+logFit2 <- nls(PrDens~SSlogis(calBP, Asym, xmid, scale), data=spd.stoneage$grid, control=nls.control(maxiter=200),start=list(Asym=0.9,xmid=5900,scale=-100))
+# Generate a data frame containing the fitted values
+logFitDens2=data.frame(calBP=spd.stoneage$grid$calBP,PrDens=SSlogis(input=spd.stoneage$grid$calBP, Asym=coefficients(logFit2)[1], xmid=coefficients(logFit2)[2], scal=coefficients(logFit2)[3]))
+# Use the modelTest function (returning the raw simulation output - see below)
+LogNull2 <- modelTest(cal.stoneage, errors=staged.stoneage$SD, bins=bins.stoneage, nsim=500, runm=100, timeRange=c(11800,2500), method = c("calsample"), model="custom", predgrid=logFitDens2, raw=TRUE)
+#Plot the mcspd
+plot(LogNull2, calendar="BCAD", xlim = c(-9800,-500), ylim = c(0, 0.45))
+#Generate summary statistics for MCSPD
+summary(LogNull2)
+
+
+###Spatial test###
+sites <- unique(data.frame(id=staged$Site_ID, lat=staged$Latitude, lon=staged$Longitude))
+
+sites <- st_as_sf(sites, coords=c('lon','lat'), crs=4326)
+
+breaks <- seq(11500,2500,-500) #500 year blocks
+
+plot(spd2rc(spd, breaks = breaks))
+
+stagedspatial <- sptest(calDates=cal, bins=bins, timeRange=c(11500,2500), locations=sites, locations.id.col='id', h=100, kernel='gaussian', permute="bins", nsim=500, breaks=breaks, ncores=2, verbose=FALSE)
+
+win  <- st_geometry(ne_countries(continent='europe', scale=10, returnclass='sf'))
+
+xrange <- st_bbox(sites)[c(1,3)]
+yrange <- st_bbox(sites)[c(2,4)]
+
+#Spatial Permutation Test for Transition 11, F4-EN
+par(mar=c(1,1,4,1),mfrow=c(1,2)) 
+plot(win,col="antiquewhite3", border="antiquewhite3",xlim=xrange, ylim=yrange,main="4500-4000 to 4000-3500 BCE \n (Test Results)")
+plot(stagedspatial,index=11, option="test", add=TRUE, legend=TRUE, legSize=0.5, location="topleft")
+
+#Geometric Growth Rate for Transition 11, F4-EN
+plot(win,col="antiquewhite3", border="antiquewhite3", xlim=xrange, ylim=yrange, main="4500-4000 to 4000-3500 BCE \n (Growth Rate)")
+plot(stagedspatial,index=11, option="raw", add=TRUE,breakRange =c(-0.005,0.005), breakLength=7, rd=5, legend=TRUE, legSize=0.5, location="topleft")
+
+#Spatial Permutation Test for Transition 13, EN-MN A
+par(mar=c(1,1,4,1),mfrow=c(1,2)) 
+plot(win,col="antiquewhite3", border="antiquewhite3",xlim=xrange, ylim=yrange,main="4000-3500 to 3500-3000 BCE \n (Test Results)")
+plot(stagedspatial,index=12, option="test", add=TRUE, legend=TRUE, legSize=0.5, location="topleft")
+
+#Geometric Growth Rate for Transition 13, EN-MN A
+plot(win,col="antiquewhite3", border="antiquewhite3", xlim=xrange, ylim=yrange, main="4000-3500 to 3500-3000 BCE \n (Growth Rate)")
+plot(stagedspatial,index=12, option="raw", add=TRUE,breakRange =c(-0.005,0.005), breakLength=7, rd=5, legend=TRUE, legSize=0.7, location="topleft")
+
+#All four above
+par(mar=c(1,1,4,1),mfrow=c(2,2)) 
+plot(win,col="antiquewhite3", border="antiquewhite3",xlim=xrange, ylim=yrange,main="A: 4500-4000 to 4000-3500 BCE \n (Test Results)")
+plot(stagedspatial,index=11, option="test", add=TRUE, legend=TRUE, legSize=0.5, location="topleft")
+plot(win,col="antiquewhite3", border="antiquewhite3", xlim=xrange, ylim=yrange, main="4500-4000 to 4000-3500 BCE \n (Growth Rate)")
+plot(stagedspatial,index=11, option="raw", add=TRUE,breakRange =c(-0.005,0.005), breakLength=7, rd=5, legend=TRUE, legSize=0.5, location="topleft")
+plot(win,col="antiquewhite3", border="antiquewhite3",xlim=xrange, ylim=yrange,main="B: 4000-3500 to 3500-3000 BCE \n (Test Results)")
+plot(stagedspatial,index=12, option="test", add=TRUE, legend=TRUE, legSize=0.5, location="topleft")
+plot(win,col="antiquewhite3", border="antiquewhite3", xlim=xrange, ylim=yrange, main="4000-3500 to 3500-3000 BCE \n (Growth Rate)")
+plot(stagedspatial,index=12, option="raw", add=TRUE,breakRange =c(-0.005,0.005), breakLength=7, rd=5, legend=TRUE, legSize=0.5, location="topleft")
